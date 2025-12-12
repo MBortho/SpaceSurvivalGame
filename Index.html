@@ -1,0 +1,283 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mini Space Survival</title><style>
+html,body{height:100%;margin:0;background:#070a12;color:#e8ecff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+#wrap{height:100%;display:grid;place-items:center}
+canvas{background:radial-gradient(circle at 30% 20%,#111a33,#070a12 60%,#04060c);border:1px solid rgba(255,255,255,.12);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.6);width:min(92vw,920px);height:auto}
+.hud{position:fixed;inset:14px 14px auto 14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.10);padding:10px 12px;border-radius:14px;backdrop-filter:blur(8px);font-weight:600}
+.pill{padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}
+.hint{position:fixed;inset:auto 14px 14px 14px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.10);padding:10px 12px;border-radius:14px;backdrop-filter:blur(8px);max-width:920px;margin:0 auto;font-size:14px;opacity:.95}
+.hint kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:2px 6px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08)}
+</style></head><body>
+<div class="hud"><div class="pill">Score: <span id="score">0</span></div><div class="pill">Lives: <span id="lives">3</span></div><div class="pill">Wave: <span id="wave">1</span></div><div class="pill">Best: <span id="best">0</span></div><div class="pill" id="state">Press <b>Enter</b> to Start</div></div>
+<div id="wrap"><canvas id="c" width="920" height="540"></canvas></div>
+<div class="hint">Controls: <kbd>WASD</kbd>/<kbd>Arrow Keys</kbd> move, <kbd>Space</kbd> shoot, <kbd>Shift</kbd> boost, <kbd>P</kbd> pause, <kbd>Enter</kbd> start/restart.</div>
+
+<script>
+(()=>{let c=document.getElementById("c"),x=c.getContext("2d"),scoreEl=document.getElementById("score"),livesEl=document.getElementById("lives"),waveEl=document.getElementById("wave"),bestEl=document.getElementById("best"),stateEl=document.getElementById("state")
+let TAU=Math.PI*2,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),rand=(a,b)=>a+Math.random()*(b-a),dist2=(ax,ay,bx,by)=>{let dx=ax-bx,dy=ay-by;return dx*dx+dy*dy},wrap=(v,max)=>v<0?v+max:(v>=max?v-max:v)
+
+let keys=new Set(),last=performance.now(),running=false,paused=false
+let score=0,best=Number(localStorage.getItem("mini_best")||0);bestEl.textContent=best
+let lives=3,wave=1,bullets=[],rocks=[],particles=[],spawnTimer=0
+
+let p={x:c.width*.5,y:c.height*.5,r:14,vx:0,vy:0,invuln:0,fireCd:0,heading:0}
+
+function updateHud(){scoreEl.textContent=score;livesEl.textContent=lives;waveEl.textContent=wave;bestEl.textContent=best}
+function setStateText(t){stateEl.innerHTML=t}
+function resetGame(){score=0;lives=3;wave=1;bullets=[];rocks=[];particles=[];spawnTimer=0;p.x=c.width*.5;p.y=c.height*.5;p.vx=0;p.vy=0;p.invuln=1.2;p.fireCd=0;updateHud()}
+
+function spawnRock(size=3){
+let margin=30,x0,y0,side=Math.floor(rand(0,4))
+if(side===0){x0=-margin;y0=rand(0,c.height)}
+if(side===1){x0=c.width+margin;y0=rand(0,c.height)}
+if(side===2){x0=rand(0,c.width);y0=-margin}
+if(side===3){x0=rand(0,c.width);y0=c.height+margin}
+let baseR=size===3?34:(size===2?22:14)
+let speed=(size===3?rand(40,85):(size===2?rand(70,120):rand(100,160)))*(1+wave*.05)
+let ang=Math.atan2(p.y-y0,p.x-x0)+rand(-.9,.9)
+let vx=Math.cos(ang)*speed,vy=Math.sin(ang)*speed
+let pts=[],n=Math.floor(rand(7,11))
+for(let i=0;i<n;i++){let a=(i/n)*TAU,rr=baseR*rand(.72,1.15);pts.push({a:a,rr:rr})}
+rocks.push({x:x0,y:y0,vx:vx,vy:vy,r:baseR,size:size,pts:pts,spin:rand(-1.6,1.6),rot:rand(0,TAU)})
+}
+
+function splitRock(r){
+if(r.size<=1)return
+let next=r.size-1
+for(let i=0;i<2;i++){
+let child={x:r.x,y:r.y,r:next===2?22:14,size:next,pts:r.pts.map(q=>({a:q.a,rr:q.rr*rand(.55,.75)})),rot:rand(0,TAU),spin:rand(-2.4,2.4),vx:r.vx*rand(.6,.9)+rand(-70,70),vy:r.vy*rand(.6,.9)+rand(-70,70)}
+rocks.push(child)
+}
+}
+
+function boom(xx,yy,count=18){
+for(let i=0;i<count;i++){
+let a=rand(0,TAU),s=rand(60,240)
+particles.push({x:xx,y:yy,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rand(.35,.85),t:0})
+}
+}
+
+addEventListener("keydown",(e)=>{
+if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","Shift","Enter"].includes(e.key))e.preventDefault()
+keys.add(e.key)
+if(e.key==="Enter"){
+if(!running){running=true;paused=false;resetGame();setStateText("Survive!")}
+else if(lives<=0){resetGame();setStateText("Survive!")}
+}
+if(e.key.toLowerCase()==="p"&&running){paused=!paused;setStateText(paused?"Paused (press <b>P</b>)":"Survive!")}
+},{passive:false})
+
+addEventListener("keyup",(e)=>{keys.delete(e.key)})
+
+function update(dt){
+if(!running||paused)return
+
+let targetWave=1+Math.floor(score/400)
+if(targetWave>wave){wave=targetWave;updateHud()}
+
+let spawnEvery=clamp(1.35-wave*.06,.45,1.35)
+spawnTimer-=dt
+if(spawnTimer<=0){spawnTimer=spawnEvery;let size=Math.random()<.55?3:(Math.random()<.65?2:1);spawnRock(size)}
+
+let ax=(keys.has("a")||keys.has("ArrowLeft"))?-1:((keys.has("d")||keys.has("ArrowRight"))?1:0)
+let ay=(keys.has("w")||keys.has("ArrowUp"))?-1:((keys.has("s")||keys.has("ArrowDown"))?1:0)
+let boost=keys.has("Shift")?1.65:1
+let accel=820*boost
+p.vx+=ax*accel*dt
+p.vy+=ay*accel*dt
+let drag=keys.has("Shift")?.985:.972
+p.vx*=Math.pow(drag,dt*60)
+p.vy*=Math.pow(drag,dt*60)
+let maxSpd=360*boost
+let spd=Math.hypot(p.vx,p.vy)
+if(spd>maxSpd){p.vx=(p.vx/spd)*maxSpd;p.vy=(p.vy/spd)*maxSpd}
+
+p.x=wrap(p.x+p.vx*dt,c.width)
+p.y=wrap(p.y+p.vy*dt,c.height)
+
+if(Math.abs(p.vx)+Math.abs(p.vy)>3)p.heading=Math.atan2(p.vy,p.vx)
+
+p.fireCd=Math.max(0,p.fireCd-dt)
+if(keys.has(" ")&&p.fireCd===0&&lives>0){
+p.fireCd=.14
+let bx=p.x+Math.cos(p.heading)*(p.r+6)
+let by=p.y+Math.sin(p.heading)*(p.r+6)
+let bs=520
+bullets.push({x:bx,y:by,vx:Math.cos(p.heading)*bs+p.vx*.25,vy:Math.sin(p.heading)*bs+p.vy*.25,life:.9})
+}
+
+p.invuln=Math.max(0,p.invuln-dt)
+
+for(let i=bullets.length-1;i>=0;i--){
+let b=bullets[i]
+b.life-=dt
+b.x=wrap(b.x+b.vx*dt,c.width)
+b.y=wrap(b.y+b.vy*dt,c.height)
+if(b.life<=0)bullets.splice(i,1)
+}
+
+for(let r of rocks){r.x=wrap(r.x+r.vx*dt,c.width);r.y=wrap(r.y+r.vy*dt,c.height);r.rot+=r.spin*dt}
+
+for(let i=particles.length-1;i>=0;i--){
+let q=particles[i]
+q.t+=dt
+q.x+=q.vx*dt
+q.y+=q.vy*dt
+q.vx*=Math.pow(.92,dt*60)
+q.vy*=Math.pow(.92,dt*60)
+if(q.t>=q.life)particles.splice(i,1)
+}
+
+for(let i=rocks.length-1;i>=0;i--){
+let r=rocks[i]
+for(let j=bullets.length-1;j>=0;j--){
+let b=bullets[j],rr=r.r+2
+if(dist2(r.x,r.y,b.x,b.y)<=rr*rr){
+bullets.splice(j,1);rocks.splice(i,1)
+boom(r.x,r.y,16+r.size*6);splitRock(r)
+let gain=r.size===3?30:(r.size===2?55:85)
+score+=gain
+if(score>best){best=score;localStorage.setItem("mini_best",""+best)}
+updateHud()
+break
+}
+}
+}
+
+if(lives>0&&p.invuln===0){
+for(let i=rocks.length-1;i>=0;i--){
+let r=rocks[i],rr=(p.r+r.r)*.92
+if(dist2(p.x,p.y,r.x,r.y)<=rr*rr){
+boom(p.x,p.y,48)
+lives-=1
+updateHud()
+p.invuln=1.4
+p.vx*=-.5;p.vy*=-.5
+if(lives<=0){setStateText("Game Over — press <b>Enter</b> to Restart");bullets=[]}
+break
+}
+}
+}
+}
+
+function drawStarfield(){
+x.save()
+x.globalAlpha=.9
+for(let i=0;i<70;i++){
+let xx=(i*131)%c.width,yy=(i*241)%c.height
+let tw=(Math.sin((performance.now()/700)+i)+1)*.5
+x.globalAlpha=.12+tw*.18
+x.fillRect(xx,yy,2,2)
+}
+x.restore()
+}
+
+function drawPlayer(){
+let pulse=p.invuln>0?(Math.sin(performance.now()/90)*.5+.5):0
+x.save()
+x.translate(p.x,p.y)
+x.rotate(p.heading)
+x.lineWidth=2
+x.strokeStyle="rgba(232,236,255,0.95)"
+x.fillStyle="rgba(232,236,255,0.08)"
+x.beginPath()
+x.moveTo(18,0);x.lineTo(-12,-10);x.lineTo(-7,0);x.lineTo(-12,10);x.closePath()
+x.fill();x.stroke()
+let mv=clamp(Math.hypot(p.vx,p.vy)/360,0,1)
+x.globalAlpha=.35*mv
+x.fillStyle="rgba(160,200,255,0.9)"
+x.beginPath()
+x.moveTo(-10,0);x.lineTo(-18-mv*10,-5);x.lineTo(-16-mv*8,0);x.lineTo(-18-mv*10,5);x.closePath()
+x.fill()
+if(p.invuln>0){
+x.globalAlpha=.22+pulse*.28
+x.strokeStyle="rgba(130,180,255,0.9)"
+x.lineWidth=2
+x.beginPath()
+x.arc(0,0,p.r+6,0,TAU)
+x.stroke()
+}
+x.restore()
+}
+
+function drawBullets(){
+x.save()
+x.fillStyle="rgba(232,236,255,0.9)"
+for(let b of bullets){x.beginPath();x.arc(b.x,b.y,2.2,0,TAU);x.fill()}
+x.restore()
+}
+
+function drawRocks(){
+x.save()
+x.lineWidth=2
+for(let r of rocks){
+x.save()
+x.translate(r.x,r.y)
+x.rotate(r.rot)
+x.strokeStyle="rgba(255,255,255,0.75)"
+x.fillStyle="rgba(255,255,255,0.05)"
+x.beginPath()
+for(let i=0;i<r.pts.length;i++){
+let q=r.pts[i],xx=Math.cos(q.a)*q.rr,yy=Math.sin(q.a)*q.rr
+if(i===0)x.moveTo(xx,yy);else x.lineTo(xx,yy)
+}
+x.closePath()
+x.fill();x.stroke()
+x.restore()
+}
+x.restore()
+}
+
+function drawParticles(){
+x.save()
+for(let q of particles){
+let a=1-(q.t/q.life)
+x.globalAlpha=a*.9
+x.fillStyle="rgba(180,220,255,0.9)"
+x.fillRect(q.x,q.y,2,2)
+}
+x.restore()
+}
+
+function drawTitleOverlay(){
+if(running&&lives>0)return
+x.save()
+x.fillStyle="rgba(0,0,0,0.40)"
+x.fillRect(0,0,c.width,c.height)
+x.textAlign="center"
+x.fillStyle="rgba(232,236,255,0.95)"
+x.font="800 44px system-ui,-apple-system,Segoe UI,Roboto,Arial"
+x.fillText("Mini Space Survival",c.width/2,c.height/2-40)
+x.font="600 16px system-ui,-apple-system,Segoe UI,Roboto,Arial"
+x.fillStyle="rgba(232,236,255,0.78)"
+x.fillText("Move • Shoot • Survive",c.width/2,c.height/2-10)
+x.font="600 14px system-ui,-apple-system,Segoe UI,Roboto,Arial"
+x.fillStyle="rgba(232,236,255,0.70)"
+x.fillText("Press Enter to start/restart",c.width/2,c.height/2+18)
+x.restore()
+}
+
+function render(){
+x.clearRect(0,0,c.width,c.height)
+drawStarfield()
+drawParticles()
+drawRocks()
+drawBullets()
+if(running&&lives>0)drawPlayer()
+drawTitleOverlay()
+x.save()
+x.globalAlpha=.08
+x.strokeStyle="rgba(255,255,255,0.7)"
+x.beginPath()
+x.arc(c.width/2,c.height/2,60,0,TAU)
+x.stroke()
+x.restore()
+}
+
+function frame(now){
+let dt=Math.min(.033,(now-last)/1000);last=now
+update(dt);render();requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+setStateText("Press <b>Enter</b> to Start")
+})()
+</script></body></html>
